@@ -1,0 +1,210 @@
+---
+title: "Untitled"
+author: "Rory Michelen"
+date: "June 14, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(splines)
+library(tidyverse)
+```
+
+```{r}
+# Import Data
+data<-read_csv('Sales_Transactions_Dataset_Weekly.csv')
+```
+
+```{r}
+# take a look at a single series
+p.294<-data%>%
+  select(Product_Code,`Normalized 0`:`Normalized 51`)%>%
+  gather(key='week',value='sales',`Normalized 0`:`Normalized 51`)%>%
+  mutate(week=as.numeric(str_sub(week,start=nchar(week)-1,end=-1)))%>%
+  dplyr::filter(Product_Code =='P294')%>%
+  select(week,sales)
+
+# Run linear regression
+lm.model<-lm(sales~week,data=.p.294)
+
+# Add to the single series as a column 
+p.294$prediction<-predict(lm.model)
+
+# Plot regression alongside actual
+p.294%>%
+  gather(key,value,sales,prediction)%>%
+  ggplot(aes(x=week,y=value,col=key))+geom_line()+labs(title="Product 294 Weekly Sales")
+  
+```
+
+```{r}
+# Take our original dataframe and convert to a matrix
+X<-data%>%
+  dplyr::filter(Product_Code =='P294')%>%
+  select(`Normalized 0`:`Normalized 51`)%>%
+  as.matrix()
+
+# Specificy the number of knots
+n.knots<-6
+
+# Determine position of knots
+x=seq(0,1,length.out=ncol(X))
+knots = seq(0,1,length.out = n.knots-2)
+
+# Create B Spline Basis
+B = bs(x, knots = knots, degree = 3)[,1:(n.knots)]
+
+B%>%
+  as.data.frame()%>%
+  mutate(rw=row_number())%>%
+  gather(key='key',value='value',`1`:`6`)%>%
+  ggplot(aes(x=key,y=rw,fill=value))+geom_tile()+
+  labs(title='B-Spline Basis with 6 knots and 3rd-Degree Polynomials',x='Knot',y='Week')
+
+B%>%
+  as.data.frame()%>%
+  mutate(rw=row_number())%>%
+  gather(key='key',value='value',`1`:`6`)%>%
+  ggplot(aes(x=rw,y=value,col=key))+geom_line(aes(group=key))+
+  labs(title='B-Spline Basis with 6 knots and 3rd-Degree Polynomials')
+
+
+# Fit coefficients using Least Squares Estimate
+Bcoef = matrix(0,dim(X)[1],n.knots)
+for(i in 1:dim(X)[1])
+{
+  Bcoef[i,] = solve(t(B)%*%B)%*%t(B)%*%as.matrix(X[i,])
+}
+
+as.data.frame(Bcoef%*%t(B))%>%
+  gather(key='row',value='Prediction',V1:V52)%>%
+  mutate(week=row_number()-1)%>%
+  inner_join(p.294)%>%
+  gather(key,value,sales,Prediction)%>%
+  ggplot(aes(x=week,y=value,col=key))+geom_line()+
+    labs(title='Approximation of Product 294 Sales Volume Using 6-Knot B-Spline')
+  
+```
+
+```{r}
+# Look at random sample from dataset
+sample.products<-data%>%
+  select(Product_Code)%>%
+  sample_n(12)
+
+data%>%
+  select(Product_Code,`Normalized 0`:`Normalized 51`)%>%
+  gather(key='week',value='sales',`Normalized 0`:`Normalized 51`)%>%
+  mutate(week=as.numeric(str_sub(week,start=nchar(week)-1,end=-1)))%>%
+  inner_join(sample.products)%>%
+  ggplot(aes(x=week,y=sales))+
+    geom_line(aes(group=Product_Code))+
+    facet_wrap(~Product_Code)+
+    labs(title='Weekly Product Sales by Product Code')
+```
+
+
+```{r}
+# Run B-Splines for entire dataset
+X<-data%>%
+  select(`Normalized 0`:`Normalized 51`)%>%
+  as.matrix()
+
+n.knots<-6
+x=seq(0,1,length.out=ncol(X))
+knots = seq(0,1,length.out = n.knots-2)
+
+B = bs(x, knots = knots, degree = 3)[,1:(n.knots)]
+Bcoef = matrix(0,dim(X)[1],n.knots)
+for(i in 1:dim(X)[1])
+{
+  Bcoef[i,] = solve(t(B)%*%B)%*%t(B)%*%as.matrix(X[i,])
+}
+
+head(B)
+
+```
+
+```{r}
+# Run K-means
+wss <- function(k) {
+  kmeans(as.data.frame(Bcoef), k, nstart = 10 )$tot.withinss
+}
+
+# Compute and plot wss for k = 1 to k = 15
+k.values <- 1:15
+
+# extract wss for 2-15 clusters
+wss_values <- map_dbl(k.values, wss)
+
+plot(k.values, wss_values,
+       type="b", pch = 19, frame = FALSE, 
+       xlab="Number of clusters K",
+       ylab="Total within-clusters sum of squares")
+
+data$cluster<-kmeans(as.data.frame(Bcoef), 2, nstart = 10 )$cluster
+
+data%>%
+  group_by(cluster)%>%
+  sample_n(3)%>%
+  select(Product_Code,`Normalized 0`:`Normalized 51`,cluster)%>%
+  gather(key='week',value='sales',`Normalized 0`:`Normalized 51`)%>%
+  mutate(week=as.numeric(str_sub(week,start=nchar(week)-1,end=-1)))%>%
+  ggplot(aes(x=week,y=sales,col=as.factor(cluster)))+
+    geom_line(aes(group=Product_Code))+
+    facet_wrap(~Product_Code,nrow=2)+
+    theme(legend.position = 'none')+
+    labs(title='Weekly Product Sales by Code',subtitle='Clustered using K=5',nrow=5)
+
+```
+
+```{r}
+# Run kmeans again with k=5
+set.seed(521)
+
+data$cluster<-kmeans(as.data.frame(Bcoef), 5, nstart = 10 )$cluster
+
+data%>%
+  group_by(cluster)%>%
+  sample_n(2)%>%
+  select(Product_Code,`Normalized 0`:`Normalized 51`,cluster)%>%
+  gather(key='week',value='sales',`Normalized 0`:`Normalized 51`)%>%
+  mutate(week=as.numeric(str_sub(week,start=nchar(week)-1,end=-1)))%>%
+  ggplot(aes(x=week,y=sales,col=as.factor(cluster)))+
+    geom_line(aes(group=Product_Code))+
+    facet_wrap(~Product_Code,nrow=2)+
+    theme(legend.position = 'none')+
+    labs(title='Weekly Product Sales by Code',subtitle='Clustered using K=5',nrow=5)
+
+
+k.final<-kmeans(as.data.frame(Bcoef), 5, nstart = 10 )
+c<-k.final$centers
+
+# Multiply each cluster centroid by the b-spline basis
+cluster.1<-as.data.frame(B%*%c[1,])%>%
+  mutate(week=row_number()-1,cluster=1)
+
+cluster.2<-as.data.frame(B%*%c[2,])%>%
+  mutate(week=row_number()-1,cluster=2)
+
+cluster.3<-as.data.frame(B%*%c[3,])%>%
+  mutate(week=row_number()-1,cluster=3)
+
+cluster.4<-as.data.frame(B%*%c[4,])%>%
+  mutate(week=row_number()-1,cluster=4)
+
+cluster.5<-as.data.frame(B%*%c[5,])%>%
+  mutate(week=row_number()-1,cluster=5)
+
+cluster.1%>%
+  union_all(cluster.2)%>%
+  union_all(cluster.3)%>%
+  union_all(cluster.4)%>%
+  union_all(cluster.5)%>%
+  ggplot(aes(x=52-week,y=V1,col=as.factor(cluster)))+
+    geom_line()+
+    labs(title='Cluster Centers for K=5',x='Week')+theme(legend.position = 'none')
+  
+```
+
